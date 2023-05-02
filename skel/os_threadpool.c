@@ -3,108 +3,186 @@
 #include <stdio.h>
 #include <unistd.h>
 
-/* === TASK === */
+#define TRUE 1
+#define FALSE 0
+#define WAIT_TIME 500
 
-/* Creates a task that thread must execute */
-os_task_t *task_create(void *arg, void (*f)(void *))
-{
-    os_task_t *task = (os_task_t *)malloc(sizeof(os_task_t));
-    task->task = f;
-    task->argument = arg;
-    return task;
+
+#define ERROR(message) { \
+        fprintf(stderr, "An Error has occured with message: %s\n", message); \
+        exit(EXIT_FAILURE); \
 }
 
-/* Add a new task to threadpool task queue */
-void add_task_in_queue(os_threadpool_t *tp, os_task_t *t)
-{
-    os_task_queue_t *new_node = (os_task_queue_t *)malloc(sizeof(os_task_queue_t));
-    new_node->task = t;
-    new_node->next = NULL;
+os_task_t *task_create(void *arg, void (*f)(void *)) {
 
-    pthread_mutex_lock(&tp->taskLock);
-    os_task_queue_t *last_node = tp->tasks;
+    os_task_t* new_task = NULL;
+    size_t task_size = sizeof(os_task_t);
+    new_task = calloc(1, task_size);
+    if (new_task == NULL) {
+        ERROR("Calloc call failed");
+    }
+    new_task->argument = arg;
+    new_task->task = f;
+
+    return new_task;
+}
+
+
+void add_task_in_queue(os_threadpool_t *tp, os_task_t *t) {
+
+    os_task_queue_t *new_queue_task = NULL;
+    size_t queue_task_size = sizeof(os_task_queue_t);
+
+    new_queue_task = calloc(1, queue_task_size);
     
-    // The queue is empty, add first node
-    if (last_node == NULL) {
-        tp->tasks = new_node;
+    if (new_queue_task == NULL) {
+        ERROR("Calloc call failed");
+    }
+
+    
+    short status = 0;
+    status = pthread_mutex_lock(&tp->taskLock);
+    if (status) {
+        ERROR("Locking mutex failed");
+    }
+    os_task_queue_t *last_queue_task = tp->tasks;
+
+    if (last_queue_task == NULL) {
+        new_queue_task->task = t;
+        new_queue_task->next = NULL;
+        tp->tasks = new_queue_task;
         pthread_mutex_unlock(&tp->taskLock);
         return;
     }
 
-    // The queue is not empty, add last node.
-    while (last_node->next) {
-        last_node = last_node->next;
+    new_queue_task->task = t;
+    new_queue_task->next = NULL;
+
+    if (last_queue_task->next != NULL) {
+        do {
+            last_queue_task = last_queue_task->next;
+        } while (last_queue_task->next != NULL);
     }
-    last_node->next = new_node;
+
+    last_queue_task->next = new_queue_task;
     pthread_mutex_unlock(&tp->taskLock);
-}
-
-/* Get the head of task queue from threadpool */
-os_task_t *get_task(os_threadpool_t *tp)
-{
-    pthread_mutex_lock(&tp->taskLock);
-    // If the queue is empty, return null.
-    if (tp->tasks == NULL) {
-        pthread_mutex_unlock(&tp->taskLock);
-        return NULL;
+    if (status) {
+        ERROR("Unlocking mutex failed");
     }
-    // If it's not empty, retrieve the first node
-    // And make the queue point to the second node
-    os_task_queue_t *task_node = tp->tasks;
-    tp->tasks = task_node->next;
-    pthread_mutex_unlock(&tp->taskLock);
-
-    // Store the task in a variable and free the node
-    os_task_t *task = task_node->task;
-    free(task_node);
-    return task;
 }
 
-/* === THREAD POOL === */
 
-/* Initialize the new threadpool */
-os_threadpool_t *threadpool_create(unsigned int nTasks, unsigned int nThreads)
-{
-    os_threadpool_t *tp = (os_threadpool_t *)malloc(sizeof(os_threadpool_t));
-    tp->should_stop = 0;
-    tp->num_threads = nThreads;
-    tp->threads = (pthread_t *)malloc(nThreads * sizeof(pthread_t));
+os_task_t *get_task(os_threadpool_t *tp) {
 
-    tp->tasks = (os_task_queue_t *)malloc(sizeof(os_task_queue_t));
-    tp->tasks->task = NULL;
-    tp->tasks->next = NULL;
-
-    pthread_mutex_init(&tp->taskLock, NULL);
-
-    for (int i = 0; i < nThreads; i++) {
-        pthread_create(&tp->threads[i], NULL, thread_loop_function, (void *)tp);
+    short status = 0;
+    status = pthread_mutex_lock(&tp->taskLock);
+    if (status) {
+        ERROR("Locking mutex failed");
     }
-    
-    return tp;
+    os_task_t *first_task = NULL;
+
+    if (tp->tasks != NULL) {
+        first_task = tp->tasks->task;
+        void *to_delete = tp->tasks;
+        tp->tasks = tp->tasks->next;
+        free(to_delete);    
+    }
+
+    status = pthread_mutex_unlock(&tp->taskLock);
+    if (status) {
+        ERROR("Unlocking mutex failed");
+    }
+    return first_task;
 }
 
-/* Loop function for threads */
+os_threadpool_t *threadpool_create(unsigned int nTasks, unsigned int nThreads) {
+
+    os_threadpool_t *all_tasks = NULL;
+    size_t threadpool_size = sizeof(os_threadpool_t);
+    all_tasks = calloc(1, threadpool_size);
+    if (all_tasks == NULL) {
+        ERROR("Calloc call failed");
+    }
+    all_tasks->num_threads = nThreads;
+    all_tasks->should_stop = FALSE;
+    all_tasks->threads = NULL;
+    size_t pthread_size = sizeof(pthread_t);
+    all_tasks->threads = calloc(nThreads, pthread_size);
+
+    if (all_tasks->threads == NULL) {
+        ERROR("Calloc call failed");
+    }
+
+    all_tasks->tasks = NULL;
+    size_t queue_task_size = sizeof(os_task_queue_t); 
+    all_tasks->tasks = calloc(1, queue_task_size);
+
+    if (all_tasks->threads == NULL) {
+        ERROR("Calloc call failed");
+    }
+    all_tasks->tasks->task = NULL;
+    all_tasks->tasks->next = NULL;
+
+    short status = 0;
+    status = pthread_mutex_init(&all_tasks->taskLock, NULL);
+    if (status) {
+        ERROR("Initialize mutex failed");
+    }
+
+    pthread_t *current_thread = all_tasks->threads;
+
+    while (nThreads) {
+        status = pthread_create(current_thread, NULL, thread_loop_function, (void *) all_tasks);
+        if (status) {
+            ERROR("Pthread create failed");
+        }
+        ++current_thread;
+        --nThreads;
+    }
+
+    return all_tasks;
+}
+
 void *thread_loop_function(void *args)
 {
-    os_threadpool_t *tp = (os_threadpool_t *)args;
-    while (!tp->should_stop) {
-        os_task_t *task = get_task(tp);
-        if (task) {
-            task->task(task->argument);
-            free(task);
-        } else {
-            usleep(1000);
-        }
+    os_threadpool_t *all_tasks = NULL;
+    os_task_t *current_task = NULL;
+    
+    all_tasks = (os_threadpool_t *)args;
+    if (!all_tasks->should_stop) {
+        do {
+            current_task = get_task(all_tasks);
+            if (!current_task) {
+                usleep(WAIT_TIME);   
+            } else {
+                current_task->task(current_task->argument);
+                free(current_task);
+            }
+        } while (!all_tasks->should_stop);
     }
+
     return NULL;
 }
 
-/* Stop the thread pool once a condition is met */
+
 void threadpool_stop(os_threadpool_t *tp, int (*processingIsDone)(os_threadpool_t *))
 {   
-    tp->should_stop = 1;
+    pthread_t *current_thread = NULL;
+    if (!tp->num_threads) {
+        return;
+    }
 
-    for (int i = 0; i < tp->num_threads; i++) {
-        pthread_join(tp->threads[i], NULL);
+    tp->should_stop = TRUE;
+
+    current_thread = tp->threads;
+    short n = tp->num_threads;
+    while (n) {
+        size_t status = 0;
+        status = pthread_join(*current_thread, NULL);
+        if (status) {
+           ERROR("Pthread join failed"); 
+        }
+        --n;
+        ++current_thread;
     }
 }
