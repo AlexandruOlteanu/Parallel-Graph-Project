@@ -143,8 +143,8 @@ os_threadpool_t *threadpool_create(unsigned int nTasks, unsigned int nThreads) {
     return all_tasks;
 }
 
-void *thread_loop_function(void *args)
-{
+void *thread_loop_function(void *args) {
+    
     os_threadpool_t *all_tasks = NULL;
     os_task_t *current_task = NULL;
     
@@ -165,8 +165,8 @@ void *thread_loop_function(void *args)
 }
 
 
-void threadpool_stop(os_threadpool_t *tp, int (*processingIsDone)(os_threadpool_t *))
-{   
+void threadpool_stop(os_threadpool_t *tp, int (*processingIsDone)(os_threadpool_t *)) {
+
     pthread_t *current_thread = NULL;
     if (!tp->num_threads) {
         return;
