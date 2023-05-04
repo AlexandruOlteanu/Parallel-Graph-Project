@@ -1,0 +1,11 @@
+<Copyright Alexandru Olteanu 332CA <alexandruolteanu2001@gmail.com>>
+
+    Tema a fost una interesanta, a fost o prima ocazie de a lucra cu grafuri
+pe threaduri. Am inceput prin a implementa functiile de baza din os_threadpool.c 
+pentru a putea adauga un task in coada, prelua unul, crearea threadpool-ului, etc.
+M-am asigurat ca orice functionalitate care poate fi accesata din mai multe threaduri 
+sa fie thread safe, asa ca am folosit mutex-uri. In continuare, am implementat parallel.c 
+unde am exstras structura grafului din fisier, apoi am creat threadpool-ul cu threaduri ce 
+executa vizitarea unui nod din graf. Cand se viziteaza un nod, acesta creeaza mai departe
+threaduri cu taskuri pentru vecinii sai nevizitati. Astfel, se executa prelucrarea
+grafului pe threaduri, limitate la maxim 4 threaduri prin threadpool.
