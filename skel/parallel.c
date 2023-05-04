@@ -9,35 +9,38 @@
 #include "os_threadpool.h"
 #include "os_list.h"
 
-#define MAX_TASK 100
-#define MAX_THREAD 4
+#define TRUE 1
+#define FALSE 0
+#define WAIT_TIME 500
+#define ARGS_NUMBER 2
+#define FILE_MODE "r"
+#define NR_THREADS 4
 
 int sum = 0;
-os_graph_t *graph;
-os_threadpool_t *tp;
-pthread_mutex_t sum_mutex; // Mutex for sum
 int pending_tasks = 0; // Counter for pending tasks
 pthread_mutex_t pending_tasks_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for pending tasks counter
 pthread_cond_t tasks_done_cond = PTHREAD_COND_INITIALIZER; // Conditional variable for tasks done
 pthread_mutex_t visited_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for visited array
+os_graph_t *tasks_graph = NULL;
+os_threadpool_t *all_tasks = NULL;
+pthread_mutex_t mtx; // Mutex for sum
 
-void processNode(unsigned int nodeIdx)
-{
-    os_node_t *node = graph->nodes[nodeIdx];
-    pthread_mutex_lock(&sum_mutex); // Lock the mutex
+void solveTask(unsigned int nodeIdx) {
+    os_node_t *node = tasks_graph->nodes[nodeIdx];
+    pthread_mutex_lock(&mtx); // Lock the mutex
     sum += node->nodeInfo;
-    pthread_mutex_unlock(&sum_mutex); // Unlock the mutex
+    pthread_mutex_unlock(&mtx); // Unlock the mutex
     for (int i = 0; i < node->cNeighbours; i++) {
         pthread_mutex_lock(&visited_mutex);
-        if (graph->visited[node->neighbours[i]] == 0) {
-            graph->visited[node->neighbours[i]] = 1;
+        if (tasks_graph->visited[node->neighbours[i]] == 0) {
+            tasks_graph->visited[node->neighbours[i]] = 1;
             pthread_mutex_unlock(&visited_mutex);
 
-            os_task_t *task = task_create((void*)(intptr_t)node->neighbours[i], (void (*)(void *))processNode);
+            os_task_t *task = task_create((void*)(intptr_t)node->neighbours[i], (void (*)(void *))solveTask);
             pthread_mutex_lock(&pending_tasks_mutex);
             pending_tasks++;
             pthread_mutex_unlock(&pending_tasks_mutex);
-            add_task_in_queue(tp, task);
+            add_task_in_queue(all_tasks, task);
         } else {
             pthread_mutex_unlock(&visited_mutex);
         }
@@ -51,70 +54,116 @@ void processNode(unsigned int nodeIdx)
     pthread_mutex_unlock(&pending_tasks_mutex);
 }
 
-int main(int argc, char *argv[])
-{
-    if (argc != 2)
-    {
-        printf("Usage: ./main input_file\n");
-        exit(1);
+#define ERROR(message) { \
+        fprintf(stderr, "An Error has occured with message: %s\n", message); \
+        exit(EXIT_FAILURE); \
+}
+
+int main(int argc, char *argv[]) {
+
+    if (argc != ARGS_NUMBER) {
+        ERROR("Wrong usage of the program, correct: ./main file_name")
     }
 
-    FILE *input_file = fopen(argv[1], "r");
+    FILE *file = fopen(argv[1], FILE_MODE);
 
-    if (input_file == NULL) {
-        printf("[Error] Can't open file\n");
-        return -1;
+    if (file == NULL) {
+        ERROR("Opening file failed");
+    }
+    tasks_graph = create_graph_from_file(file);
+    if (tasks_graph == NULL) {
+        ERROR("Failed to create graph");
     }
 
-    graph = create_graph_from_file(input_file);
-    if (graph == NULL) {
-        printf("[Error] Can't read the graph from file\n");
-        return -1;
+    all_tasks = threadpool_create(tasks_graph->nCount, NR_THREADS);
+    if (all_tasks == NULL) {
+        ERROR("Failed to work with empty tasks");
+    }
+    short status = 0;
+    status = pthread_mutex_init(&mtx, NULL);
+    if (status) {
+        ERROR("Failed to initiate mutex");
     }
 
-    // Create threadpool with desired number of threads
-    tp = threadpool_create(graph->nCount, MAX_THREAD);
+    int i = 0;
+    do {
 
-    // Initialize the mutex for sum
-    pthread_mutex_init(&sum_mutex, NULL);
-
-    for (int i = 0; i < graph->nCount; i++)
-    {
-        pthread_mutex_lock(&visited_mutex);
-        if (graph->visited[i] == 0) {
-            graph->visited[i] = 1;
-            pthread_mutex_unlock(&visited_mutex);
-
-            os_task_t *task = task_create((void*)(intptr_t)i, (void (*)(void *))processNode);
-            pthread_mutex_lock(&pending_tasks_mutex);
-            pending_tasks++;
-            pthread_mutex_unlock(&pending_tasks_mutex);
-            add_task_in_queue(tp, task);
-        } else {
-            pthread_mutex_unlock(&visited_mutex);
+        status = pthread_mutex_lock(&visited_mutex);
+        if (status) {
+            ERROR("Failed to lock mutex");
         }
+        if (tasks_graph->visited[i] == FALSE) {
+            tasks_graph->visited[i] = TRUE;
+
+            status = pthread_mutex_unlock(&visited_mutex);
+            if (status) {
+                ERROR("Failed to unlock mutex");
+            }
+
+            os_task_t *currentTask = task_create((void*)(intptr_t)i, (void (*)(void *))solveTask);
+            if (currentTask != NULL) { 
+                status = pthread_mutex_lock(&pending_tasks_mutex);
+                if (status) {
+                    ERROR("Failed to lock mutex");
+                }
+                ++pending_tasks;
+                add_task_in_queue(all_tasks, currentTask);
+                status = pthread_mutex_unlock(&pending_tasks_mutex);
+                if (status) {
+                    ERROR("Failed to unlock mutex");
+                }
+            } else {
+                ERROR("Failed to create Task");
+            }
+        } else {
+            status = pthread_mutex_unlock(&visited_mutex);
+            if (status) {
+                ERROR("Failed to unlock mutex");
+            }
+        }
+        ++i;
+
+    } while (i < tasks_graph->nCount);
+
+    status = pthread_mutex_lock(&pending_tasks_mutex);
+    if (status) {
+        ERROR("Failed to lock mutex");
+    }
+    do {
+        status = pthread_cond_wait(&tasks_done_cond, &pending_tasks_mutex);
+        if (status) {
+            ERROR("Failed on cond wait");
+        }
+    } while (pending_tasks > 0);
+    
+    status = pthread_mutex_unlock(&pending_tasks_mutex);
+    if (status) {
+        ERROR("Failed to unlock mutex");
     }
 
-    pthread_mutex_lock(&pending_tasks_mutex);
-    while (pending_tasks > 0) {
-        pthread_cond_wait(&tasks_done_cond, &pending_tasks_mutex);
+    threadpool_stop(all_tasks, NULL);
+
+    const int nr_mutex = 3;
+    pthread_mutex_t* all_mutex = malloc(nr_mutex * sizeof(pthread_mutex_t));
+    all_mutex[0] = mtx;
+    all_mutex[1] = pending_tasks_mutex;
+    all_mutex[2] = visited_mutex;
+
+    int p = 0;
+    do {
+        status = pthread_mutex_destroy(&all_mutex[p]);
+        if (status) {
+            ERROR("Failed on destroing mutex");
+        }
+        ++p;
+    } while (p < nr_mutex);
+    
+    status = pthread_cond_destroy(&tasks_done_cond);
+    if (status) {
+        ERROR("Failed to destroy cond mutex");
     }
-        pthread_mutex_unlock(&pending_tasks_mutex);
 
-    // Wait for all tasks to finish
-    threadpool_stop(tp, NULL);
-
-    // Destroy the mutex for sum
-    pthread_mutex_destroy(&sum_mutex);
-
-    // Destroy the mutex and conditional variable for pending tasks
-    pthread_mutex_destroy(&pending_tasks_mutex);
-    pthread_cond_destroy(&tasks_done_cond);
-
-    // Destroy the mutex for visited array
-    pthread_mutex_destroy(&visited_mutex);
-
-    printf("%d", sum);
+    printf("%d\n", sum);
     return 0;
 }
 
