@@ -11,52 +11,83 @@
 
 #define TRUE 1
 #define FALSE 0
-#define WAIT_TIME 500
 #define ARGS_NUMBER 2
 #define FILE_MODE "r"
 #define NR_THREADS 4
 
-int sum = 0;
-int pending_tasks = 0; // Counter for pending tasks
-pthread_mutex_t pending_tasks_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for pending tasks counter
-pthread_cond_t tasks_done_cond = PTHREAD_COND_INITIALIZER; // Conditional variable for tasks done
-pthread_mutex_t visited_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for visited array
-os_graph_t *tasks_graph = NULL;
-os_threadpool_t *all_tasks = NULL;
-pthread_mutex_t mtx; // Mutex for sum
-
-void solveTask(unsigned int nodeIdx) {
-    os_node_t *node = tasks_graph->nodes[nodeIdx];
-    pthread_mutex_lock(&mtx); // Lock the mutex
-    sum += node->nodeInfo;
-    pthread_mutex_unlock(&mtx); // Unlock the mutex
-    for (int i = 0; i < node->cNeighbours; i++) {
-        pthread_mutex_lock(&visited_mutex);
-        if (tasks_graph->visited[node->neighbours[i]] == 0) {
-            tasks_graph->visited[node->neighbours[i]] = 1;
-            pthread_mutex_unlock(&visited_mutex);
-
-            os_task_t *task = task_create((void*)(intptr_t)node->neighbours[i], (void (*)(void *))solveTask);
-            pthread_mutex_lock(&pending_tasks_mutex);
-            pending_tasks++;
-            pthread_mutex_unlock(&pending_tasks_mutex);
-            add_task_in_queue(all_tasks, task);
-        } else {
-            pthread_mutex_unlock(&visited_mutex);
-        }
-    }
-
-    pthread_mutex_lock(&pending_tasks_mutex);
-    pending_tasks--;
-    if (pending_tasks == 0) {
-        pthread_cond_signal(&tasks_done_cond);
-    }
-    pthread_mutex_unlock(&pending_tasks_mutex);
-}
-
 #define ERROR(message) { \
         fprintf(stderr, "An Error has occured with message: %s\n", message); \
         exit(EXIT_FAILURE); \
+}
+
+
+int result = 0;
+int queued_tasks = 0;
+pthread_mutex_t pending_tasks_mutex;
+pthread_cond_t tasks_done_cond;
+pthread_mutex_t visited_mutex;
+os_graph_t *tasks_graph = NULL;
+os_threadpool_t *all_tasks = NULL;
+pthread_mutex_t mtx;
+
+void solveTask(unsigned int nodeIdx) {
+    short status = 0;
+    os_node_t *node = tasks_graph->nodes[nodeIdx];
+    status = pthread_mutex_lock(&mtx);
+    if (status) {
+        ERROR("Failed to lock mutex");
+    }
+    result += node->nodeInfo;
+    status = pthread_mutex_unlock(&mtx);
+    if (status) {
+        ERROR("Failed to unlock mutex");
+    }
+    for (int i = 0; i < node->cNeighbours; i++) {
+        status = pthread_mutex_lock(&visited_mutex);
+        if (status) {
+            ERROR("Failed to lock mutex");
+        }
+        if (tasks_graph->visited[node->neighbours[i]] == 0) {
+            tasks_graph->visited[node->neighbours[i]] = 1;
+            status = pthread_mutex_unlock(&visited_mutex);
+            if (status) {
+                ERROR("Failed to unlock mutex");
+            }
+
+            __intptr_t p = node->neighbours[i];
+            os_task_t *currentTask = task_create((void *) p, (void (*)(void *))solveTask);
+            status = pthread_mutex_lock(&pending_tasks_mutex);
+            if (status) {
+                ERROR("Failed to lock mutex");
+            }
+            ++queued_tasks;
+            status = pthread_mutex_unlock(&pending_tasks_mutex);
+            if (status) {
+                ERROR("Failed to unlock mutex");
+            }
+            add_task_in_queue(all_tasks, currentTask);
+        } else {
+            status = pthread_mutex_unlock(&visited_mutex);
+            if (status) {
+                ERROR("Failed to unlock mutex");
+            }
+        }
+    }
+
+    status = pthread_mutex_lock(&pending_tasks_mutex);
+    if (status) {
+        ERROR("Failed to lock mutex");
+    }
+    if (--queued_tasks == 0) {
+        status = pthread_cond_signal(&tasks_done_cond);
+        if (status) {
+            ERROR("Failed to execute cond signal");
+        }
+    }
+    status = pthread_mutex_unlock(&pending_tasks_mutex);
+    if (status) {
+        ERROR("Failed to unlock mutex");
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -100,13 +131,14 @@ int main(int argc, char *argv[]) {
                 ERROR("Failed to unlock mutex");
             }
 
-            os_task_t *currentTask = task_create((void*)(intptr_t)i, (void (*)(void *))solveTask);
+            __intptr_t p = i;
+            os_task_t *currentTask = task_create((void *) p, (void (*)(void *))solveTask);
             if (currentTask != NULL) { 
                 status = pthread_mutex_lock(&pending_tasks_mutex);
                 if (status) {
                     ERROR("Failed to lock mutex");
                 }
-                ++pending_tasks;
+                ++queued_tasks;
                 add_task_in_queue(all_tasks, currentTask);
                 status = pthread_mutex_unlock(&pending_tasks_mutex);
                 if (status) {
@@ -134,7 +166,7 @@ int main(int argc, char *argv[]) {
         if (status) {
             ERROR("Failed on cond wait");
         }
-    } while (pending_tasks > 0);
+    } while (queued_tasks > 0);
     
     status = pthread_mutex_unlock(&pending_tasks_mutex);
     if (status) {
@@ -163,7 +195,7 @@ int main(int argc, char *argv[]) {
         ERROR("Failed to destroy cond mutex");
     }
 
-    printf("%d\n", sum);
+    printf("%d\n", result);
     return 0;
 }
 
